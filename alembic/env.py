@@ -2,12 +2,16 @@ import asyncio
 import os
 import sys
 from logging.config import fileConfig
+from dotenv import load_dotenv
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+load_dotenv()
+
+
 
 # 1. Point to your app directory and import Base
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -15,6 +19,11 @@ from app.models.models import Base
 
 # this is the Alembic Config object
 config = context.config
+
+#  Force Alembic to use the DATABASE_URL from your .env file
+db_url = os.getenv("DATABASE_URL")
+if db_url:
+    config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
