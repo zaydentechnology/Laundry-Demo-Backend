@@ -12,6 +12,9 @@ class ServiceCategoryResponse(BaseModel):
 class ItemServicePriceBase(BaseModel):
     service_category_id: int
     price: float
+    is_discount_active: bool = False
+    discount_type: str = "PERCENTAGE"
+    discount_value: float = 0.0
 
 class ItemServicePriceResponse(ItemServicePriceBase):
     id: int

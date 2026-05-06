@@ -45,3 +45,4 @@ class UserUpdate(BaseModel):
     flat_number: Optional[str] = None
     building_name: Optional[str] = None
     password: Optional[str] = None
+    wallet_balance: Optional[float] = None

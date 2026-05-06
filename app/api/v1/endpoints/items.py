@@ -36,3 +36,10 @@ async def update_existing_item(item_id: int, item_in: ItemUpdate, db: AsyncSessi
         raise HTTPException(status_code=404, detail="Item not found")
     return updated
 
+
+@router.delete("/{item_id}", dependencies=[Depends(RoleChecker([UserRole.ADMIN]))])
+async def delete_existing_item(item_id: int, db: AsyncSession = Depends(get_db)):
+    success = await item_repo.delete_item(db, item_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"message": "Item permanently deleted"}

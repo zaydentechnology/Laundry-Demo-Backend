@@ -18,7 +18,10 @@ async def create_item(db: AsyncSession, item_in: ItemCreate):
         db.add(ItemServicePrice(
             item_id=db_item.id,
             service_category_id=svc["service_category_id"],
-            price=svc["price"]
+            price=svc["price"],
+            is_discount_active=svc.get("is_discount_active", False),
+            discount_type=svc.get("discount_type", "PERCENTAGE"),
+            discount_value=svc.get("discount_value", 0.0)
         ))
         
     await db.commit()
@@ -74,7 +77,10 @@ async def update_item(db: AsyncSession, item_id: int, item_in: ItemUpdate):
             db.add(ItemServicePrice(
                 item_id=item_id,
                 service_category_id=svc["service_category_id"],
-                price=svc["price"]
+                price=svc["price"],
+                is_discount_active=svc.get("is_discount_active", False),
+                discount_type=svc.get("discount_type", "PERCENTAGE"),
+                discount_value=svc.get("discount_value", 0.0)
             ))
 
     await db.commit()
@@ -88,4 +94,15 @@ async def update_item(db: AsyncSession, item_id: int, item_in: ItemUpdate):
     )
     return final_result.scalars().first()
 
+
+async def delete_item(db: AsyncSession, item_id: int):
+    result = await db.execute(select(LaundryItem).where(LaundryItem.id == item_id))
+    db_item = result.scalars().first()
+    
+    if not db_item:
+        return False
+        
+    await db.delete(db_item)
+    await db.commit()
+    return True
 

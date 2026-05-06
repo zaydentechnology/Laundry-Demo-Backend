@@ -149,23 +149,16 @@ async def update_my_order(
                 final_price -= wallet_discount_aed
                 discount_applied += wallet_discount_aed
 
-            # 5. Delete old items & Insert new ones strictly from Matrix
+            # 5.Delete old items & Insert new ones directly from pricing engine
             await db.execute(delete(OrderItem).where(OrderItem.order_id == order_id))
             
-            for item_data in update_data.items:
-                res = await db.execute(select(ItemServicePrice).where(
-                    ItemServicePrice.item_id == item_data.item_id,
-                    ItemServicePrice.service_category_id == item_data.service_category_id
-                ))
-                sp = res.scalars().first()
-                if not sp: raise HTTPException(status_code=400, detail="Invalid service configuration.")
-
+            for p_item in totals["processed_items"]:
                 db.add(OrderItem(
                     order_id=order.id,
-                    item_id=item_data.item_id,
-                    service_category_id=item_data.service_category_id,
-                    estimated_quantity=item_data.estimated_quantity,
-                    unit_price=sp.price 
+                    item_id=p_item["item_id"],
+                    service_category_id=p_item["service_category_id"],
+                    estimated_quantity=p_item["quantity"],
+                    unit_price=p_item["unit_price"] 
                 ))
 
             # 6. Update Header with new math
@@ -252,34 +245,31 @@ async def create_order(
     created_order_id = new_order.id 
 
     # 4. ADD ITEMS
-    for item_data in order_in.items:
-        res = await db.execute(select(ItemServicePrice).where(
-            ItemServicePrice.item_id == item_data.item_id,
-            ItemServicePrice.service_category_id == item_data.service_category_id
-        ))
-        sp = res.scalars().first()
-        if not sp:
-            raise HTTPException(status_code=400, detail="Invalid service configuration for item")
+    # for item_data in order_in.items:
+    #     res = await db.execute(select(ItemServicePrice).where(
+    #         ItemServicePrice.item_id == item_data.item_id,
+    #         ItemServicePrice.service_category_id == item_data.service_category_id
+    #     ))
+    #     sp = res.scalars().first()
+    #     if not sp:
+    #         raise HTTPException(status_code=400, detail="Invalid service configuration for item")
 
+    #     db.add(OrderItem(
+    #         order_id=created_order_id,
+    #         item_id=item_data.item_id,
+    #         service_category_id=item_data.service_category_id,
+    #         estimated_quantity=item_data.estimated_quantity,
+    #         unit_price=sp.price # strictly from matrix
+    #     ))
+    for p_item in totals["processed_items"]:
         db.add(OrderItem(
             order_id=created_order_id,
-            item_id=item_data.item_id,
-            service_category_id=item_data.service_category_id,
-            estimated_quantity=item_data.estimated_quantity,
-            unit_price=sp.price # strictly from matrix
+            item_id=p_item["item_id"],
+            service_category_id=p_item["service_category_id"],
+            estimated_quantity=p_item["quantity"],
+            unit_price=p_item["unit_price"] # Stores the exact discounted price!
         ))
-    # 4. ADD ITEMS
-    # for item_data in order_in.items:
-    #     res = await db.execute(select(LaundryItem).where(LaundryItem.id == item_data.item_id))
-    #     li = res.scalars().first()
-    #     db.add(OrderItem(
-    #         order_id=created_order_id, 
-    #         item_id=item_data.item_id,
-    #         estimated_quantity=item_data.estimated_quantity,
-    #         unit_price=li.base_price if li else 0.0
-    #     ))
-    
-    # 5. COMMIT EVERYTHING
+  
     await db.commit()
     
     # 6. FETCH FINAL RESULT FOR RESPONSE

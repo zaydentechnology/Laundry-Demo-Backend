@@ -93,26 +93,13 @@ async def process_pickup(db: AsyncSession, order_id: int, pickup_data: PickupCre
     # 3. Update OrderItems (Delete & Re-insert for accuracy)
     await db.execute(delete(OrderItem).where(OrderItem.order_id == order_id))
 
-    # FIX: Import the Matrix table
-    from app.models.models import ItemServicePrice 
-
-    for p_item in pickup_data.items:
-        # FIX: Query the Matrix to get the exact service price, NOT the LaundryItem
-        res = await db.execute(select(ItemServicePrice).where(
-            ItemServicePrice.item_id == p_item.item_id,
-            ItemServicePrice.service_category_id == p_item.service_category_id
-        ))
-        sp = res.scalars().first()
-        
-        if not sp:
-            raise HTTPException(status_code=400, detail=f"Pricing matrix not found for item {p_item.item_id} and service {p_item.service_category_id}")
-            
+    for p_item in totals["processed_items"]:
         new_oi = OrderItem(
             order_id=order.id,
-            item_id=p_item.item_id,
-            service_category_id=p_item.service_category_id, # <-- Save the category to the DB
-            final_quantity=p_item.final_quantity,
-            unit_price=sp.price # <-- Use the exact matrix price
+            item_id=p_item["item_id"],
+            service_category_id=p_item["service_category_id"],
+            final_quantity=p_item["quantity"],
+            unit_price=p_item["unit_price"] # <-- Use the exact engine price
         )
         db.add(new_oi)
 
@@ -206,34 +193,21 @@ async def admin_force_update_order(db: AsyncSession, order_id: int, update_data:
                 "item_id": i["item_id"], 
                 "service_category_id": i["service_category_id"], 
                 "quantity": i["final_quantity"],
-                "unit_price": i.get("unit_price") # <-- NEW
+                "unit_price": i.get("unit_price") 
             } 
             for i in new_items
         ]
+        
+        # Calculate totals
         totals = await calculate_order_price(db, pricing_input)
         
-        for i in new_items:
-            custom_price = i.get("unit_price")
-            
-            # Determine the final price to save to the database
-            if custom_price is not None:
-                final_unit_price = custom_price
-            else:
-                res = await db.execute(select(ItemServicePrice).where(
-                    ItemServicePrice.item_id == i["item_id"],
-                    ItemServicePrice.service_category_id == i["service_category_id"]
-                ))
-                sp = res.scalars().first()
-                if not sp:
-                    raise HTTPException(status_code=400, detail=f"Pricing matrix not found for item {i['item_id']}")
-                final_unit_price = sp.price
-
+        for p_item in totals["processed_items"]:
             db.add(OrderItem(
                 order_id=order_id,
-                item_id=i["item_id"],
-                service_category_id=i["service_category_id"], 
-                final_quantity=i["final_quantity"],
-                unit_price=final_unit_price # <-- Save the explicit price for this specific order
+                item_id=p_item["item_id"],
+                service_category_id=p_item["service_category_id"], 
+                final_quantity=p_item["quantity"],
+                unit_price=p_item["unit_price"] # Safely saves custom override or DB price
             ))
             
         order.estimated_price = totals["final_total"]

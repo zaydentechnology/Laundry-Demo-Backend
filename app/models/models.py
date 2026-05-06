@@ -175,5 +175,10 @@ class ItemServicePrice(Base):
     service_category_id = Column(Integer, ForeignKey("service_categories.id", ondelete="CASCADE"), nullable=False)
     price = Column(Float, nullable=False)
 
+    # --- NEW DISCOUNT COLUMNS ---
+    is_discount_active = Column(Boolean, default=False)
+    discount_type = Column(String, default="PERCENTAGE") # "PERCENTAGE" or "FIXED"
+    discount_value = Column(Float, default=0.0)
+
     item = relationship("LaundryItem", back_populates="services")
     category = relationship("ServiceCategory")
