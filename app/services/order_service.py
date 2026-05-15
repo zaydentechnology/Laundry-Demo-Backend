@@ -1,4 +1,3 @@
-
 # app/services/order_service.py
 from app.schemas.order import AdminOrderUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +7,6 @@ from sqlalchemy import delete
 from fastapi import HTTPException
 from datetime import datetime
 
-# ADDED: SystemConfig and User for the referral logic
 from app.models.models import ItemServicePrice, Order, OrderItem, OrderStatus, LaundryItem, Transaction, SystemConfig, User
 from app.services.pricing_service import calculate_order_price
 from app.schemas.pickup import PickupCreate
@@ -78,8 +76,12 @@ async def process_pickup(db: AsyncSession, order_id: int, pickup_data: PickupCre
     if not order or order.status != OrderStatus.NEW_ORDER:
         raise HTTPException(status_code=400, detail="Order not found or already picked up")
 
+    # Fetch configuration for currency conversions if necessary
+    config_res = await db.execute(select(SystemConfig).limit(1))
+    config = config_res.scalars().first()
+    conversion_rate = config.credit_conversion_rate if config else 1.0
+
     # 2. Recalculate Final Price using actual quantities verified by staff
-    # FIX: Pydantic objects use dot notation (i.service_category_id), not dictionary syntax
     pricing_input = [
         {
             "item_id": i.item_id, 
@@ -99,13 +101,23 @@ async def process_pickup(db: AsyncSession, order_id: int, pickup_data: PickupCre
             item_id=p_item["item_id"],
             service_category_id=p_item["service_category_id"],
             final_quantity=p_item["quantity"],
-            unit_price=p_item["unit_price"] # <-- Use the exact engine price
+            unit_price=p_item["unit_price"]  # <-- Use the exact engine price
         )
         db.add(new_oi)
 
-    # 4. Update Order Header
-    order.final_price = totals["final_total"]
-    order.discount_applied = totals["discount_applied"]
+    # 4. Update Order Header (Safely preserves existing wallet deductions)
+    raw_final_total = totals["final_total"]
+    base_discount = totals["discount_applied"]
+    
+    # Safely evaluate pre-existing wallet usage applied during booking
+    existing_credits = getattr(order, 'credits_used', 0.0) or 0.0
+    wallet_discount_aed = existing_credits * conversion_rate
+    
+    # Ensure final price accurately reflects the wallet credit subtracted from the items subtotal
+    adjusted_final_price = max(0.0, raw_final_total - wallet_discount_aed)
+
+    order.final_price = round(adjusted_final_price, 2)
+    order.discount_applied = round(base_discount + wallet_discount_aed, 2)
     order.status = OrderStatus.PICKED_UP
 
     order.expected_delivery_date = pickup_data.expected_delivery_date
@@ -153,12 +165,15 @@ async def process_delivery(db: AsyncSession, order_id: int, delivery_data: Deliv
     return await _get_order_with_relations(db, order_id)
 
 
-
-
 async def admin_force_update_order(db: AsyncSession, order_id: int, update_data: AdminOrderUpdate) -> Order:
     order = await _get_order_with_relations(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    # Fetch configuration for currency conversions if necessary
+    config_res = await db.execute(select(SystemConfig).limit(1))
+    config = config_res.scalars().first()
+    conversion_rate = config.credit_conversion_rate if config else 1.0
 
     data = update_data.model_dump(exclude_unset=True)
     
@@ -193,12 +208,12 @@ async def admin_force_update_order(db: AsyncSession, order_id: int, update_data:
                 "item_id": i["item_id"], 
                 "service_category_id": i["service_category_id"], 
                 "quantity": i["final_quantity"],
-                "unit_price": i.get("unit_price") 
+                "unit_price": i.get("unit_price")
             } 
             for i in new_items
         ]
         
-        # Calculate totals
+        # Calculate base totals from the pricing engine
         totals = await calculate_order_price(db, pricing_input)
         
         for p_item in totals["processed_items"]:
@@ -207,12 +222,21 @@ async def admin_force_update_order(db: AsyncSession, order_id: int, update_data:
                 item_id=p_item["item_id"],
                 service_category_id=p_item["service_category_id"], 
                 final_quantity=p_item["quantity"],
-                unit_price=p_item["unit_price"] # Safely saves custom override or DB price
+                unit_price=p_item["unit_price"]  # Safely saves custom override or DB price
             ))
             
-        order.estimated_price = totals["final_total"]
-        order.final_price = totals["final_total"]
-        order.discount_applied = totals["discount_applied"]
+        # Safely evaluate pre-existing wallet usage applied during booking
+        existing_credits = getattr(order, 'credits_used', 0.0) or 0.0
+        wallet_discount_aed = existing_credits * conversion_rate
+        
+        raw_final_total = totals["final_total"]
+        base_discount = totals["discount_applied"]
+        
+        adjusted_final_price = max(0.0, raw_final_total - wallet_discount_aed)
+
+        order.estimated_price = round(adjusted_final_price, 2)
+        order.final_price = round(adjusted_final_price, 2)
+        order.discount_applied = round(base_discount + wallet_discount_aed, 2)
 
     # --- 2. HANDLE HANGER PREFERENCE ---
     if "hanger_needed" in data:
@@ -261,3 +285,266 @@ async def admin_force_update_order(db: AsyncSession, order_id: int, update_data:
 
     await db.commit()
     return await _get_order_with_relations(db, order_id)
+
+# # app/services/order_service.py
+# from app.schemas.order import AdminOrderUpdate
+# from sqlalchemy.ext.asyncio import AsyncSession
+# from sqlalchemy.future import select
+# from sqlalchemy.orm import selectinload
+# from sqlalchemy import delete
+# from fastapi import HTTPException
+# from datetime import datetime
+
+# # ADDED: SystemConfig and User for the referral logic
+# from app.models.models import ItemServicePrice, Order, OrderItem, OrderStatus, LaundryItem, Transaction, SystemConfig, User
+# from app.services.pricing_service import calculate_order_price
+# from app.schemas.pickup import PickupCreate
+# from app.schemas.delivery import DeliveryCreate
+
+
+# async def _get_order_with_relations(db: AsyncSession, order_id: int) -> Order:
+#     """
+#     Helper to fetch an order with items and customer pre-loaded.
+#     This prevents 'MissingGreenlet' errors during Pydantic serialization.
+#     """
+#     stmt = (
+#         select(Order)
+#         .where(Order.id == order_id)
+#         .options(
+#             selectinload(Order.customer),
+#             selectinload(Order.items).joinedload(OrderItem.item),              # <-- KEEP THIS
+#             selectinload(Order.items).joinedload(OrderItem.service_category)   # <-- ADD THIS
+#         )
+#     )
+#     result = await db.execute(stmt)
+#     return result.scalars().first()
+
+
+# async def _handle_first_delivery_referral(db: AsyncSession, customer_id: int, current_order_id: int):
+#     """
+#     Private helper: Checks if this is the customer's first completed delivery.
+#     If yes, and they were referred, credits the referrer.
+#     """
+#     # 1. Verify customer and referral linkage
+#     customer_res = await db.execute(select(User).where(User.id == customer_id))
+#     customer = customer_res.scalars().first()
+#     if not customer or not customer.referred_by_id:
+#         return
+
+#     # 2. Check if referral system is active
+#     config_res = await db.execute(select(SystemConfig).limit(1))
+#     config = config_res.scalars().first()
+#     if not config or not config.referral_system_enabled:
+#         return
+
+#     # 3. Check if this is truly the first delivered order
+#     past_delivered_res = await db.execute(
+#         select(Order.id)
+#         .where(Order.customer_id == customer_id)
+#         .where(Order.status == OrderStatus.DELIVERED)
+#         .where(Order.id != current_order_id)
+#         .limit(1)
+#     )
+    
+#     # If they already have a past delivered order, reward was already issued
+#     if past_delivered_res.scalars().first() is not None:
+#         return
+
+#     # 4. Credit the referrer
+#     referrer_res = await db.execute(select(User).where(User.id == customer.referred_by_id))
+#     referrer = referrer_res.scalars().first()
+#     if referrer:
+#         referrer.wallet_balance += config.reward_credits_per_referral
+
+
+# async def process_pickup(db: AsyncSession, order_id: int, pickup_data: PickupCreate) -> Order:
+#     # 1. Fetch Order (Initial check)
+#     result = await db.execute(select(Order).where(Order.id == order_id))
+#     order = result.scalars().first()
+    
+#     if not order or order.status != OrderStatus.NEW_ORDER:
+#         raise HTTPException(status_code=400, detail="Order not found or already picked up")
+
+#     # 2. Recalculate Final Price using actual quantities verified by staff
+#     # FIX: Pydantic objects use dot notation (i.service_category_id), not dictionary syntax
+#     pricing_input = [
+#         {
+#             "item_id": i.item_id, 
+#             "service_category_id": i.service_category_id, 
+#             "quantity": i.final_quantity
+#         } 
+#         for i in pickup_data.items
+#     ]
+#     totals = await calculate_order_price(db, pricing_input)
+
+#     # 3. Update OrderItems (Delete & Re-insert for accuracy)
+#     await db.execute(delete(OrderItem).where(OrderItem.order_id == order_id))
+
+#     for p_item in totals["processed_items"]:
+#         new_oi = OrderItem(
+#             order_id=order.id,
+#             item_id=p_item["item_id"],
+#             service_category_id=p_item["service_category_id"],
+#             final_quantity=p_item["quantity"],
+#             unit_price=p_item["unit_price"] # <-- Use the exact engine price
+#         )
+#         db.add(new_oi)
+
+#     # 4. Update Order Header
+#     order.final_price = totals["final_total"]
+#     order.discount_applied = totals["discount_applied"]
+#     order.status = OrderStatus.PICKED_UP
+
+#     order.expected_delivery_date = pickup_data.expected_delivery_date
+#     order.expected_delivery_time = pickup_data.expected_delivery_time
+    
+#     await db.commit()
+    
+#     # 5. RETURN with relations loaded
+#     return await _get_order_with_relations(db, order_id)
+
+
+# async def process_delivery(db: AsyncSession, order_id: int, delivery_data: DeliveryCreate) -> Order:
+#     # 1. Fetch Order
+#     result = await db.execute(select(Order).where(Order.id == order_id))
+#     order = result.scalars().first()
+    
+#     if not order:
+#         raise HTTPException(status_code=404, detail="Order not found")
+    
+#     # Validation: Must be PICKED_UP to be DELIVERED
+#     if order.status != OrderStatus.PICKED_UP:
+#         raise HTTPException(
+#             status_code=400, 
+#             detail=f"Cannot deliver order in {order.status} status. Must be PICKED_UP first."
+#         )
+
+#     # 2. Create Transaction Record
+#     new_transaction = Transaction(
+#         order_id=order.id,
+#         received_amount=delivery_data.received_amount,
+#         payment_method=delivery_data.payment_method,
+#         delivery_date=delivery_data.delivery_date
+#     )
+#     db.add(new_transaction)
+
+#     # 3. Update Order Header
+#     order.status = OrderStatus.DELIVERED
+    
+#     # 4. Trigger referral evaluation hook before committing
+#     await _handle_first_delivery_referral(db, order.customer_id, order.id)
+    
+#     await db.commit()
+    
+#     # 5. RETURN with relations loaded
+#     return await _get_order_with_relations(db, order_id)
+
+
+
+
+# async def admin_force_update_order(db: AsyncSession, order_id: int, update_data: AdminOrderUpdate) -> Order:
+#     order = await _get_order_with_relations(db, order_id)
+#     if not order:
+#         raise HTTPException(status_code=404, detail="Order not found")
+
+#     data = update_data.model_dump(exclude_unset=True)
+    
+#     # --- DETERMINE INTENTS ---
+#     status_changing_to_cancelled = (
+#         "status" in data and 
+#         data["status"] == OrderStatus.CANCELLED and 
+#         order.status != OrderStatus.CANCELLED
+#     )
+    
+#     status_changed_to_delivered = (
+#         "status" in data and 
+#         data["status"] == OrderStatus.DELIVERED and 
+#         order.status != OrderStatus.DELIVERED
+#     )
+
+#     status_reverting_from_delivered = (
+#         "status" in data and 
+#         data["status"] != OrderStatus.DELIVERED and 
+#         order.status == OrderStatus.DELIVERED
+#     )
+
+#     # --- 1. HANDLE ITEM OVERRIDES & PRICE RECALCULATION ---
+#     if "items" in data:
+#         new_items = data.pop("items")
+        
+#         await db.execute(delete(OrderItem).where(OrderItem.order_id == order_id))
+        
+#         # Pass the unit_price down to the calculator if it exists
+#         pricing_input = [
+#             {
+#                 "item_id": i["item_id"], 
+#                 "service_category_id": i["service_category_id"], 
+#                 "quantity": i["final_quantity"],
+#                 "unit_price": i.get("unit_price") 
+#             } 
+#             for i in new_items
+#         ]
+        
+#         # Calculate totals
+#         totals = await calculate_order_price(db, pricing_input)
+        
+#         for p_item in totals["processed_items"]:
+#             db.add(OrderItem(
+#                 order_id=order_id,
+#                 item_id=p_item["item_id"],
+#                 service_category_id=p_item["service_category_id"], 
+#                 final_quantity=p_item["quantity"],
+#                 unit_price=p_item["unit_price"] # Safely saves custom override or DB price
+#             ))
+            
+#         order.estimated_price = totals["final_total"]
+#         order.final_price = totals["final_total"]
+#         order.discount_applied = totals["discount_applied"]
+
+#     # --- 2. HANDLE HANGER PREFERENCE ---
+#     if "hanger_needed" in data:
+#         order.hanger_needed = data.pop("hanger_needed")
+
+#     # --- 3. UPDATE REMAINING HEADER FIELDS (Status, Dates, etc.) ---
+#     for key, value in data.items():
+#         setattr(order, key, value)
+
+#     # --- 4. THE HOOKS & FINANCIAL FAIL-SAFES ---
+    
+#     # Hook A: Referral Check
+#     if status_changed_to_delivered:
+#         await _handle_first_delivery_referral(db, order.customer_id, order.id)
+        
+#     # Hook B: Revenue Fail-Safe (Create missing ledger entry)
+#     if status_changed_to_delivered:
+#         tx_res = await db.execute(select(Transaction).where(Transaction.order_id == order_id))
+#         if not tx_res.scalars().first():
+#             amount_to_collect = order.final_price if order.final_price and order.final_price > 0 else order.estimated_price
+#             db.add(Transaction(
+#                 order_id=order_id,
+#                 received_amount=amount_to_collect,
+#                 payment_method="CASH",
+#                 delivery_date=datetime.utcnow()
+#             ))
+
+#     # Hook C: Revenue Fail-Safe (Delete ledger entry if admin undoes a delivery)
+#     if status_reverting_from_delivered:
+#         await db.execute(delete(Transaction).where(Transaction.order_id == order_id))
+        
+#     # Hook D: Cancellation & Refund Processing
+#     if status_changing_to_cancelled:
+#         credits_to_refund = order.credits_used if order.credits_used is not None else 0.0
+        
+#         if credits_to_refund > 0:
+#             user_res = await db.execute(select(User).where(User.id == order.customer_id))
+#             customer = user_res.scalars().first()
+#             if customer:
+#                 customer.wallet_balance += credits_to_refund
+            
+#             order.credits_used = 0.0 
+            
+#         order.estimated_price = 0.0
+#         order.final_price = 0.0
+
+#     await db.commit()
+#     return await _get_order_with_relations(db, order_id)

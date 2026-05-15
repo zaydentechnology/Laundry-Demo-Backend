@@ -47,6 +47,7 @@ class OrderResponse(BaseModel):
     estimated_price: float
     discount_applied: float
     final_price: float = 0.0 
+    credits_used: float = 0.0
     pickup_date: datetime
     pickup_time: Optional[str] = None
     expected_delivery_date: Optional[datetime] = None
