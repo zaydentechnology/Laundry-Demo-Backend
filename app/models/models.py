@@ -92,8 +92,10 @@ class OrderItem(Base):
 
     service_category_id = Column(Integer, ForeignKey("service_categories.id"), nullable=False)
     
-    estimated_quantity = Column(Integer, default=0)
-    final_quantity = Column(Integer, default=0)
+    # estimated_quantity = Column(Integer, default=0)
+    estimated_quantity = Column(Float, default=0.0)
+    # final_quantity = Column(Integer, default=0)
+    final_quantity = Column(Float, default=0.0)
     unit_price = Column(Float) # Captured at time of order
 
     order = relationship("Order", back_populates="items")

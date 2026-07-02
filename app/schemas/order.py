@@ -7,7 +7,8 @@ from app.schemas.user import UserResponse
 class OrderItemBase(BaseModel):
     item_id: int
     service_category_id: int # <-- STRICTLY REQUIRED NOW (No longer Optional)
-    estimated_quantity: int
+    # estimated_quantity: int
+    estimated_quantity: float
 
 class SimpleItemResponse(BaseModel):
     name: str
@@ -34,7 +35,8 @@ class OrderCreate(BaseModel):
 
 class OrderItemResponse(OrderItemBase):
     unit_price: float
-    final_quantity: int  
+    # final_quantity: int  
+    final_quantity: float
     item: Optional[SimpleItemResponse] = None 
     service_category: Optional[SimpleCategoryResponse] = None # <-- ADDED FOR UI
 
@@ -65,7 +67,8 @@ class OrderResponse(BaseModel):
 class OrderItemUpdate(BaseModel):
     item_id: int
     service_category_id: int # <-- ADDED: So admin targets the exact matrix service when updating quantities
-    final_quantity: int = Field(..., ge=0)
+    # final_quantity: int = Field(..., ge=0)
+    final_quantity: float = Field(..., ge=0)
     unit_price: Optional[float] = None
     
 
